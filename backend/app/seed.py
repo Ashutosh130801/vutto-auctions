@@ -134,20 +134,11 @@ CATALOGUE = [
         118_000,
         "Matte Green",
     ),
-    (
-        "Kawasaki",
-        "Ninja 300",
-        "ABS",
-        2019,
-        296,
-        28_700,
-        "Bengaluru",
-        "B",
-        80,
-        248_000,
-        "Lime Green",
-    ),
+    ("Kawasaki", "Ninja 300", "ABS", 2019, 296, 28_700, "Bengaluru", "B", 80, 248_000, "Lime Green"),
     ("Ather", "450X", "Gen 3", 2023, 0, 9_300, "Bengaluru", "A", 92, 118_000, "Space Grey"),
+    ("Ola", "S1 Pro", "Gen 2", 2024, 0, 4_100, "Delhi", "A", 95, 125_000, "Matte Black"),
+    ("Triumph", "Speed 400", "Standard", 2024, 398, 5_500, "Pune", "A", 98, 225_000, "Carnival Red"),
+    ("Harley-Davidson", "X440", "Vivid", 2023, 440, 8_200, "Mumbai", "B", 88, 245_000, "Denim Black"),
 ]
 
 INSPECTION_SECTIONS = [
@@ -196,14 +187,68 @@ def inspection_report(score: int, rng: random.Random) -> dict:
     }
 
 
-def image_set(make: str, model: str) -> list[str]:
-    """Deterministic placeholder imagery keyed off the listing.
+BIKE_IMAGES = {
+  "royal-enfield-classic-350": [
+    "https://upload.wikimedia.org/wikipedia/commons/7/73/Royal_Enfield_Classic_350.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/d/d5/Royal_Enfield_Classic_350_-_Gran_Via_-_Madrid_01.jpg"
+  ],
+  "royal-enfield-himalayan": [
+    "https://upload.wikimedia.org/wikipedia/commons/b/b2/2020_Royal_Enfield_Himalayan_%282%29.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/c/c0/Royal-Enfield-Himalayan-450.jpg"
+  ],
+  "bajaj-pulsar-ns200": [
+    "https://upload.wikimedia.org/wikipedia/commons/c/c4/Bajaj_Pulsar_200_NS.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/4/4f/Bajaj_Pulsar_200_ns_grey_and_red.jpg"
+  ],
+  "ktm-duke-390": [
+    "https://upload.wikimedia.org/wikipedia/commons/b/b5/KTM_390_Duke_2017.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/a/a0/KTM_Duke_390-01.jpg"
+  ],
+  "yamaha-mt-15": [
+    "https://upload.wikimedia.org/wikipedia/commons/4/42/2018_Yamaha_MT-15.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/4/4f/Yamaha_M-Slaz_150_%28MT-15%29.jpg"
+  ],
+  "honda-cb350-h'ness": [
+    "https://upload.wikimedia.org/wikipedia/commons/7/70/1972_Honda_CB350.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/8/85/Honda_CB350.jpg"
+  ],
+  "tvs-apache-rtr-200-4v": [
+    "https://upload.wikimedia.org/wikipedia/commons/d/d4/TVS_Apache_RTR_200_4V_Front-Right_Profile.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/b/b5/TVS_Apache_RTR_200_4v.png"
+  ],
+  "suzuki-gixxer-sf-250": [
+    "https://upload.wikimedia.org/wikipedia/commons/b/b4/2021_Suzuki_Gixxer_SF_250_%2820211117%29.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/c/c3/2021_Suzuki_Gixxer_SF_250_100th_Anniversary_MotoGP_Edition_01.jpg"
+  ],
+  "hero-xpulse-200-4v": [
+    "https://upload.wikimedia.org/wikipedia/commons/5/53/Hero_Xpulse_200_4V_Pro.jpg"
+  ],
+  "kawasaki-ninja-300": [
+    "https://upload.wikimedia.org/wikipedia/commons/3/36/2014_Kawasaki_Ninja_300.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/f/f8/Kawasaki_ninja_300_se_2015.jpg"
+  ],
+  "ola-s1-pro": [
+    "https://upload.wikimedia.org/wikipedia/commons/7/76/Ola_S1_Pro.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/8/81/Ola_S1_Pro_2.jpg"
+  ],
+  "triumph-speed-400": [
+    "https://upload.wikimedia.org/wikipedia/commons/e/e7/Triumph_Speed_400.jpg"
+  ]
+}
 
-    Real deployments swap this for object-storage URLs; keeping it deterministic
-    means the demo looks identical on every machine.
-    """
-    seed = f"{make}-{model}".lower().replace(" ", "-")
-    return [f"https://picsum.photos/seed/{seed}-{i}/1200/800" for i in range(1, 6)]
+def image_set(make: str, model: str) -> list[str]:
+    """Deterministic placeholder imagery keyed off the listing."""
+    key = f"{make}-{model}".lower().replace(" ", "-")
+    images = BIKE_IMAGES.get(key, [])
+    if not images:
+        images = [
+            "https://images.unsplash.com/photo-1558981806-ec527fa84c39?q=80&w=1200&auto=format&fit=crop",
+            "https://images.unsplash.com/photo-1558981403-c5f9899a28bc?q=80&w=1200&auto=format&fit=crop"
+        ]
+    # repeat to get 5 images
+    while len(images) < 5:
+        images.extend(images)
+    return images[:5]
 
 
 async def seed() -> None:
