@@ -6,53 +6,8 @@ A live URL you can put on a CV, for ₹0, with no credit card.
 for the API, [Cloudflare Pages](https://pages.cloudflare.com) for the frontend.
 About 20 minutes, most of it waiting for builds.
 
-> **Verified July 2026.** Free tiers move; if a screen looks different, the
-> shape of the steps still holds. Current limits are tabulated at the end.
 
----
 
-## Why this combination
-
-Three constraints drove it, and they are worth stating because they explain some
-choices that would otherwise look arbitrary.
-
-**Render's free Postgres is deleted after 30 days.** Fine for a demo you show
-once, useless for a link on a CV. Neon's free tier is permanent, so the database
-lives there and Render only runs the API.
-
-**Render's background workers start at $7/month.** The auction scheduler and the
-outbox relay have to run somewhere. This app can run them inside the API process
-(`RUN_BACKGROUND_WORKERS=true`) — same code, one container, no second service.
-
-**Redis is skipped entirely.** The app treats it as an accelerator, not a
-dependency: without it, realtime fan-out is per-process (which is exactly right
-with a single instance) and the rate limiter fails open. One free instance needs
-neither, and Upstash's free tier is only 500K commands/month — a live auction
-would eat that quickly. Adding Redis later is one environment variable.
-
----
-
-## Before you start
-
-Push the project to GitHub. Everything below deploys from a repo.
-
-```bash
-cd vutto
-git init && git add -A
-git commit -m "Vutto Auctions"
-git branch -M main
-git remote add origin https://github.com/<you>/vutto-auctions.git
-git push -u origin main
-```
-
-`.gitignore` already excludes `.env`, `node_modules` and caches. **Check that no
-`.env` file went up** before continuing:
-
-```bash
-git ls-files | grep -E '^\.env$' && echo "REMOVE THIS" || echo "clean"
-```
-
----
 
 ## Step 1 — Postgres on Neon (5 min)
 
@@ -69,11 +24,11 @@ git ls-files | grep -E '^\.env$' && echo "REMOVE THIS" || echo "clean"
 
    Keep it somewhere for Step 2.
 
-**Take the pooled endpoint, not the direct one.** Neon's free compute suspends
+Neon's free compute suspends
 when idle and the pooler absorbs reconnections; the direct endpoint has a much
 lower connection ceiling and you will hit it.
 
-**Paste the string exactly as Neon gives it.** The `sslmode` and
+The `sslmode` and
 `channel_binding` parameters are libpq syntax that asyncpg does not accept —
 `app/core/dburl.py` translates them for each driver, so no hand-editing is
 needed. (Without that translation the app dies at the first connection with
@@ -84,7 +39,7 @@ thing to debug from a hosted log viewer.)
 
 ## Step 2 — API on Render (10 min)
 
-1. Sign up at **[render.com](https://render.com)** with GitHub. No card for the
+1. Sign up at [render.com](https://render.com) with GitHub. No card for the
    free tier.
 2. **New → Blueprint**, select your repo. Render reads
    [`render.yaml`](../render.yaml) and proposes one free web service,
@@ -183,169 +138,3 @@ Now open your Pages URL and sign in:
 **Change the admin password immediately** if the link is public — the seed
 credentials are in this repo.
 
----
-
-## Step 5 — Keep it awake (2 min, optional but do it)
-
-Render free services **spin down after 15 minutes idle** and take 30–60 seconds
-to wake. For an auction platform that is worse than it sounds: while the
-container is down, the scheduler is not running, so auctions pass their end time
-without closing.
-
-The design limits the damage — the engine rejects bids after `ends_at`
-regardless of whether the scheduler has swept yet, so nothing becomes
-*incorrect*, it just stays open-looking until the next request wakes the service
-and the scheduler catches up within a second.
-
-Still, a recruiter clicking your link should not wait a minute. Render's free
-allowance is **750 instance-hours/month** and a 31-day month is 744 hours, so
-one service can legitimately stay up 24/7:
-
-1. Go to **[cron-job.org](https://cron-job.org)** (free, no card).
-2. Create a job: `https://vutto-api-xxxx.onrender.com/health`, every **10
-   minutes**.
-
-`/health` is deliberately dependency-free — it never touches Postgres — so the
-pings keep the container warm without burning Neon compute hours.
-
----
-
-## Verify the whole thing
-
-```bash
-API=https://vutto-api-xxxx.onrender.com
-WEB=https://<your-project>.pages.dev
-
-curl -s $API/health/ready | jq '.checks.database.status'   # "ok"
-curl -s $WEB | grep -q 'id="root"' && echo "frontend OK"
-
-# CORS is configured correctly if this echoes your Pages origin
-curl -si -X OPTIONS "$API/api/v1/auctions" \
-  -H "Origin: $WEB" \
-  -H "Access-Control-Request-Method: GET" | grep -i access-control-allow-origin
-
-# The ledger verifies over the public internet
-ID=$(curl -s "$API/api/v1/auctions?status=LIVE" | jq -r '.items[0].id')
-curl -s "$API/api/v1/auctions/$ID/ledger" | jq .
-```
-
-Then, in the browser: open one auction in two windows signed in as two different
-buyers and bid against each other. The price should move in both within a second
-— that is the WebSocket, Render's proxy, and the outbox relay all working.
-
----
-
-## Troubleshooting
-
-**`connect() got an unexpected keyword argument 'sslmode'`**
-An older copy of the code without `app/core/dburl.py`. Pull the latest, or strip
-`?sslmode=require&channel_binding=require` from `DATABASE_URL` by hand.
-
-**`/health/ready` says the database errored**
-You used Neon's *direct* endpoint instead of the *pooled* one, or the string was
-truncated on paste. It must contain `-pooler` in the host.
-
-**The frontend loads but every request fails, console says CORS**
-`CORS_ORIGINS` does not exactly match the browser's origin. It is
-scheme + host, no trailing slash, no path. `https://x.pages.dev` — not
-`https://x.pages.dev/`.
-
-**Requests fail only on a Pages preview deployment**
-Preview builds get a different subdomain (`abc123.<project>.pages.dev`) which is
-not in `CORS_ORIGINS`. Test on the production URL, or add the preview origin.
-
-**Login returns 500**
-Almost always `SECRET_KEY` being absent. Render generates it from the blueprint;
-confirm it exists under Environment.
-
-**WebSocket connects then drops every ~60 seconds**
-The frontend reconnects with backoff automatically and refetches, so it is
-cosmetic. Render's proxy has an idle timeout; the app's 15-second heartbeat
-normally keeps it open.
-
-**First load takes a minute**
-Cold start. Do Step 5.
-
-**Build fails on Cloudflare: "npm: command not found" or a Node version error**
-Set `NODE_VERSION=22` in the Pages environment variables.
-
-**Render build fails with "no space left on device"**
-The free builder is small. It should not happen with this image, but if it does,
-confirm `backend/.dockerignore` is present — it keeps tests and caches out of
-the build context.
-
----
-
-## What the free tier gives you
-
-| Service | Free allowance | Relevant limit |
-| --- | --- | --- |
-| **Neon** Postgres | 0.5 GB storage, 100 CU-hours/month, permanent, no card | Compute suspends when idle; the pooled endpoint plus `pool_pre_ping` handles it |
-| **Render** web service | 750 instance-hours/month, 512 MB RAM, 0.1 CPU, no card | Spins down after 15 min idle; workers are paid, hence in-process |
-| **Cloudflare Pages** | Unlimited bandwidth, 500 builds/month, commercial use allowed | 20,000 files per site |
-| **cron-job.org** | Free scheduled pings | — |
-
-Comfortable for a portfolio piece, a demo, or an interview. 512 MB and 0.1 CPU
-is not a production tier and the docs do not pretend otherwise — see
-[DEPLOYMENT.md](DEPLOYMENT.md) for what a real deployment looks like.
-
-**Costs nothing, and nothing expires.** Neon and Cloudflare are permanent free
-tiers; Render's 750 hours reset monthly.
-
----
-
-## Alternative: everything on one free VM
-
-Take this path if you want the **full stack** — Redis, Prometheus and the Grafana
-dashboard included — and a service that never sleeps.
-
-**Oracle Cloud Always Free** gives a persistent ARM VM. As of June 2026 the free
-allocation was halved to **2 OCPU / 12 GB RAM**, which is still far more than
-this project needs. It requires a card for identity verification (not charged),
-and ARM capacity in popular regions is often exhausted — retry, or pick a
-quieter region.
-
-```bash
-# On the VM (Ubuntu 22.04 ARM)
-sudo apt update && sudo apt install -y docker.io docker-compose-v2 git
-sudo usermod -aG docker $USER && newgrp docker
-
-git clone https://github.com/<you>/vutto-auctions.git && cd vutto-auctions
-
-# Generate a real secret — the app refuses to boot in production without one
-echo "SECRET_KEY=$(python3 -c 'import secrets;print(secrets.token_urlsafe(64))')" > .env
-echo "APP_ENV=production" >> .env
-echo "LOG_FORMAT=json" >> .env
-echo "CORS_ORIGINS=http://<your-vm-ip>:8080" >> .env
-
-make up
-```
-
-Then open port 8080 in **both** the OCI security list *and* the VM's own
-firewall — Oracle images ship with iptables rules that block everything, which
-is the single most common reason people think their VM is broken:
-
-```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 8080 -j ACCEPT
-sudo netfilter-persistent save
-```
-
-You get the app on `:8080`, Grafana on `:3001`, Prometheus on `:9090`. Put
-Caddy in front for automatic HTTPS on a real domain.
-
-**Trade-off against the managed path:** you own patching, backups and uptime,
-and there is no build pipeline. It is more impressive to *operate*, and more
-work. For an assignment link, the Neon + Render + Pages path is the better use
-of your time.
-
----
-
-## Sources
-
-Free-tier details verified July 2026:
-
-- [Render free tier: 750 hours, limits](https://unanswered.io/guide/render-free-tier-details) · [Render Postgres 30-day expiry](https://kuberns.com/blogs/render-postgres-pricing-setup-limits/) · [Background workers are paid](https://www.saaspricepulse.com/tools/render)
-- [Neon free tier: storage and compute](https://neon.com/pricing) · [100 CU-hours, no card](https://agentdeals.dev/vendor/neon)
-- [Cloudflare Pages free limits](https://www.devtoolreviews.com/reviews/cloudflare-pages-pricing-bandwidth-limits-2026)
-- [Upstash Redis free tier](https://upstash.com/docs/redis/overall/pricing)
-- [Oracle Always Free reduced to 2 OCPU / 12 GB](https://terminalbytes.com/oracle-cloud-free-tier-changes-2026/) · [Oracle Always Free resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
