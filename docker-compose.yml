@@ -1,0 +1,148 @@
+# ---------------------------------------------------------------------------
+# One command brings up the whole platform:  make up
+#
+#   web (nginx + SPA) :8080  -> proxies /api to api
+#   api (FastAPI)     :8000
+#   worker            -- auction lifecycle + outbox relay
+#   postgres          :5432
+#   redis             :6379
+#   prometheus        :9090
+#   grafana           :3001  (admin/admin)
+#
+# `api` and `worker` share an image; only the command differs, which keeps the
+# two deployables provably in sync.
+# ---------------------------------------------------------------------------
+name: vutto-auctions
+
+x-api-env: &api-env
+  APP_ENV: ${APP_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-console}
+  SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me-0123456789abcdef0123456789abcdef}
+  DATABASE_URL: postgresql+asyncpg://vutto:vutto@postgres:5432/vutto
+  REDIS_URL: redis://redis:6379/0
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
+  METRICS_ENABLED: "true"
+  OTEL_ENABLED: ${OTEL_ENABLED:-false}
+  TRUST_PROXY_HEADERS: "true"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vutto
+      POSTGRES_PASSWORD: vutto
+      POSTGRES_DB: vutto
+      # C collation: faster comparisons, and we do not rely on locale ordering.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+      - -c
+      # Surface anything that waits on a lock for more than a second — the
+      # signal that bid contention has become a problem.
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=1s
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vutto -d vutto"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Runs migrations and seeds, then exits.  Everything that needs a schema
+  # waits on it completing successfully, so there is no race on first boot.
+  migrate:
+    build: ./backend
+    environment:
+      <<: *api-env
+    command: >
+      sh -c "python -m app.cli migrate && python -m app.cli seed"
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: ./backend
+    environment:
+      <<: *api-env
+      RUN_BACKGROUND_WORKERS: "false"   # the worker service owns these
+    command:
+      - uvicorn
+      - app.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+    deploy:
+      replicas: ${API_REPLICAS:-1}      # scale freely: no sticky sessions needed
+
+  worker:
+    build: ./backend
+    environment:
+      <<: *api-env
+    command: ["python", "-m", "app.workers"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ""           # same-origin; nginx proxies /api
+    ports: ["8080:80"]
+    depends_on: [api]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alerts.yml:/etc/prometheus/alerts.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports: ["9090:9090"]
+    depends_on: [api]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3001:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:

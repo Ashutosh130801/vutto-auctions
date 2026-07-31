@@ -1,0 +1,58 @@
+# Alerts chosen for one reason: each maps to a user-visible failure, and each
+# tells the on-call what to do.  No CPU-percentage noise.
+groups:
+  - name: auction-platform
+    rules:
+      - alert: BidLatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(auction_bid_placement_duration_seconds_bucket[5m])) by (le)) > 0.5
+        for: 3m
+        labels: { severity: warning }
+        annotations:
+          summary: "p99 bid placement above 500ms"
+          description: >
+            Bidders are feeling lag in the closing seconds. Check
+            auction_bid_lock_wait_seconds — if that is the bulk of it, one
+            auction is hot and contention is the cause, not the database.
+
+      - alert: BidLockContention
+        expr: histogram_quantile(0.95, sum(rate(auction_bid_lock_wait_seconds_bucket[5m])) by (le)) > 0.25
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Bidders queueing on the auction row lock"
+
+      - alert: OutboxBacklogGrowing
+        expr: outbox_pending_events > 500
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Realtime events are not draining"
+          description: >
+            No data is lost — events are durable in Postgres — but live updates
+            are stale. Check Redis reachability and the worker's logs.
+
+      - alert: BidRejectionSpike
+        expr: >
+          sum(rate(auction_bids_total{outcome=~"rejected_.*"}[5m]))
+            / clamp_min(sum(rate(auction_bids_total[5m])), 0.001) > 0.5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than half of bid attempts are being rejected"
+          description: "Often a client bug (stale minimums) or an overly tight rate limit."
+
+      - alert: ApiErrorRate
+        expr: >
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total[5m])), 0.001) > 0.02
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "API 5xx rate above 2%"
+
+      - alert: NoLiveAuctions
+        expr: auctions_live == 0
+        for: 30m
+        labels: { severity: info }
+        annotations:
+          summary: "No auctions are live — is the scheduler running?"

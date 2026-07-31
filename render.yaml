@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# Render Blueprint — deploys the API on Render's free tier.
+#
+#   Dashboard -> New -> Blueprint -> pick this repo.
+#
+# What this does NOT include, on purpose:
+#
+#   * Render's free PostgreSQL, because it is deleted after 30 days. Point
+#     DATABASE_URL at Neon instead (free, permanent). See docs/DEPLOY_FREE.md.
+#   * A separate background worker, because Render's workers start at $7/mo.
+#     RUN_BACKGROUND_WORKERS=true runs the auction scheduler and the outbox
+#     relay inside the web service instead — the same code, one process.
+#   * Redis. The app treats it as an accelerator, not a dependency: without it
+#     realtime fan-out is per-process (correct with a single instance) and the
+#     rate limiter fails open. One free instance needs neither.
+# ---------------------------------------------------------------------------
+services:
+  - type: web
+    name: vutto-api
+    runtime: docker
+    plan: free
+    region: singapore          # pick the region nearest your Neon project
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LOG_FORMAT
+        value: json
+      - key: LOG_LEVEL
+        value: INFO
+
+      # Generated once by Render and then held constant. Rotating it signs
+      # every existing session out.
+      - key: SECRET_KEY
+        generateValue: true
+
+      # Set these two in the dashboard after the first deploy.
+      - key: DATABASE_URL
+        sync: false            # paste your Neon pooled connection string
+      - key: CORS_ORIGINS
+        sync: false            # e.g. https://vutto-auctions.pages.dev
+
+      # One free instance = one process, so it owns the lifecycle workers.
+      - key: RUN_BACKGROUND_WORKERS
+        value: "true"
+      - key: WEB_CONCURRENCY
+        value: "1"
+
+      # Neon's free compute suspends when idle; a small pool with pre-ping
+      # reconnects cleanly instead of surfacing a stale-connection error.
+      - key: DATABASE_POOL_SIZE
+        value: "5"
+      - key: DATABASE_MAX_OVERFLOW
+        value: "5"
+
+      # Render terminates TLS and forwards; without this the client IP in the
+      # audit log is the proxy, and IP rate limits would bucket every user
+      # together.
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+
+      # Load the demo catalogue on first boot. Set to false for a real
+      # deployment — it is a no-op once the database has any user.
+      - key: SEED_ON_START
+        value: "true"
+
+      # Without Redis the limiter is per-process; keep the limits generous
+      # enough that a reviewer clicking around never trips them.
+      - key: RATE_LIMIT_BID_PER_MINUTE
+        value: "60"
+      - key: RATE_LIMIT_AUTH_PER_MINUTE
+        value: "20"
