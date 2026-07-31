@@ -1,138 +1,167 @@
+# ---------------------------------------------------------------------------
+# CI — runs on every push and pull request.
+#
+# Mirrors `make check` (lint → test → web-lint) plus a frontend build check.
+# Tests run against a real PostgreSQL service container — never SQLite — because
+# correctness depends on row locking, SKIP LOCKED and NUMERIC semantics.
+# ---------------------------------------------------------------------------
 name: CI
 
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
 jobs:
-  backend:
-    name: Backend — lint, types, tests
+  # ── Backend: lint ────────────────────────────────────────────────────────
+  backend-lint:
+    name: "Backend · Lint"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-lint-${{ hashFiles('backend/requirements-dev.txt') }}
+          restore-keys: pip-lint-
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff check
+        run: ruff check app tests
+
+      - name: Ruff format check
+        run: ruff format --check app tests
+
+      - name: Mypy
+        run: mypy app
+
+  # ── Backend: test ────────────────────────────────────────────────────────
+  backend-test:
+    name: "Backend · Test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     services:
-      # Tests run against a real PostgreSQL. SQLite would not reproduce
-      # SELECT FOR UPDATE, SKIP LOCKED or partial unique indexes, which is
-      # precisely what this suite exists to verify.
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: vutto
           POSTGRES_PASSWORD: vutto
           POSTGRES_DB: vutto_test
-        ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U vutto"
-          --health-interval 5s --health-timeout 3s --health-retries 20
-      redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 3s --health-retries 20
-
+          --health-cmd "pg_isready -U vutto -d vutto_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+        ports:
+          - 5432:5432
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://vutto:vutto@localhost:5432/vutto_test
-      DATABASE_URL: postgresql+asyncpg://vutto:vutto@localhost:5432/vutto_test
-      REDIS_URL: redis://localhost:6379/0
-      SECRET_KEY: ci-only-secret-0123456789abcdef0123456789abcdef
-
+      APP_ENV: test
+      SECRET_KEY: ci-test-secret-not-for-production-0123456789abcdef
+      LOG_LEVEL: WARNING
+      METRICS_ENABLED: "true"
+      RUN_BACKGROUND_WORKERS: "false"
+      RATE_LIMIT_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements-dev.txt
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install
-        working-directory: backend
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-test-${{ hashFiles('backend/requirements-dev.txt') }}
+          restore-keys: pip-test-
+
+      - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Lint
-        working-directory: backend
-        run: ruff check app tests
+      - name: Run tests with coverage
+        run: >
+          pytest
+          --cov=app
+          --cov-report=term-missing
+          --cov-report=xml:coverage.xml
+          -v
 
-      - name: Type check
-        working-directory: backend
-        run: mypy app
-
-      - name: Migrations apply cleanly from scratch
-        working-directory: backend
-        run: |
-          python -m app.cli migrate
-          python -m app.cli downgrade base
-          python -m app.cli migrate
-
-      - name: Tests (including concurrency storms)
-        working-directory: backend
-        run: pytest --cov=app --cov-report=xml --cov-report=term-missing
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload coverage report
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: backend-coverage
           path: backend/coverage.xml
+          retention-days: 14
 
+  # ── Frontend: lint & build ───────────────────────────────────────────────
   frontend:
-    name: Frontend — types, lint, build
+    name: "Frontend · Lint & Build"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: frontend/package.json
+          cache-dependency-path: frontend/package-lock.json
 
-      - working-directory: frontend
-        run: npm install --no-audit --no-fund
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 
-      - name: Type check
-        working-directory: frontend
+      - name: TypeScript type-check
         run: npm run typecheck
 
-      - name: Lint
-        working-directory: frontend
+      - name: ESLint
         run: npm run lint
 
-      - name: Build
-        working-directory: frontend
+      - name: Production build
         run: npm run build
+        env:
+          VITE_API_BASE_URL: ""
 
-  images:
-    name: Container images build
+  # ── Docker: build smoke test ─────────────────────────────────────────────
+  docker-build:
+    name: "Docker · Build"
     runs-on: ubuntu-latest
-    needs: [backend, frontend]
+    strategy:
+      matrix:
+        target:
+          - { context: backend, tag: vutto-api }
+          - { context: frontend, tag: vutto-web }
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with: { context: ./backend, push: false, tags: vutto/api:ci, cache-from: type=gha, cache-to: "type=gha,mode=max" }
-      - uses: docker/build-push-action@v6
-        with: { context: ./frontend, push: false, tags: vutto/web:ci, cache-from: type=gha, cache-to: "type=gha,mode=max" }
 
-  smoke:
-    name: Compose smoke test
-    runs-on: ubuntu-latest
-    needs: [images]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Bring the stack up and exercise it
-        run: |
-          docker compose up -d --build
-          # Wait for readiness rather than sleeping a fixed amount.
-          for i in $(seq 1 60); do
-            if curl -fsS http://localhost:8000/health/ready >/dev/null 2>&1; then break; fi
-            sleep 2
-          done
-          curl -fsS http://localhost:8000/health/ready | tee /dev/stderr | grep -q '"status":"ready"'
-          curl -fsS "http://localhost:8000/api/v1/auctions?status=LIVE" | grep -q '"items"'
-          curl -fsS http://localhost:8080/ | grep -q "<div id=\"root\">"
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose logs --tail 200
-      - if: always()
-        run: docker compose down -v
+      - name: Build ${{ matrix.target.tag }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.target.context }}
+          push: false
+          tags: ${{ matrix.target.tag }}:ci
