@@ -107,7 +107,7 @@ production, no divergent code paths.
 
 ## 4. Things I chose not to build
 
-Listed so their absence reads as a decision rather than an oversight.
+
 
 - **Auto-bid scheduling / sniping tools for users** — actively hostile to the
   anti-snipe design.
