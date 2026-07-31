@@ -1,21 +1,11 @@
 # Architecture
 
-## 1. The problem, honestly stated
+## 1. The problem
 
 An auction platform looks like CRUD until you look at the last thirty seconds of
-a popular auction. Then it is a distributed systems problem wearing a web app's
-clothes:
+a popular auction. 
 
-- **Concurrent writes to one row.** Dozens of bidders converge on a single
-  auction. A read-modify-write loses bids and can produce a price no one bid.
-- **Fan-out.** Everyone watching must see the new price within a second, across
-  however many API replicas are serving them.
-- **A hard deadline.** "When exactly did this close?" must have one answer, and
-  it must not depend on which server's clock you ask, or on a cron job firing.
-- **Money.** Deposits are held and released as the lead changes. Double-holding
-  or failing to release is a customer-facing financial bug.
-- **Disputes.** A losing bidder will eventually claim the history was altered.
-  You want to be able to *prove* it was not.
+
 
 Everything below follows from taking those five things seriously.
 
