@@ -2,8 +2,7 @@
 
 A production-grade live auction platform for used motorcycles: multiple
 simultaneous auctions, real-time proxy bidding, soft-close anti-sniping, a
-tamper-evident bid ledger, and the observability you would actually want at
-3 a.m. when a popular auction is closing.
+tamper-evident bid ledger
 
 Built as a Software Engineering Internship assignment. The interesting parts are
 the concurrency guarantees around bidding, the realtime architecture, and the
@@ -148,8 +147,6 @@ make test-fast     # skip the concurrency storms
 make test-cov      # with coverage
 ```
 
-**126 tests, ~85% line coverage, ~30 seconds.** Coverage on the parts that matter:
-`pricing` 100%, `bidding` 94%, `auction` 93%, `auth` 92%, models 100%.
 
 The suite runs against **real PostgreSQL**, never SQLite — the entire
 correctness argument rests on row locking, `SKIP LOCKED`, partial unique indexes
