@@ -32,6 +32,10 @@ def create_engine(url: str | None = None) -> AsyncEngine:
         pool_pre_ping=True,  # survive DB restarts / idle connection reaping
         pool_recycle=1800,
         future=True,
+        connect_args={
+            "prepared_statement_cache_size": 0,
+            "statement_cache_size": 0,
+        },
     )
 
 
